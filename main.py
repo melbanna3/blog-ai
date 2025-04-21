@@ -23,6 +23,11 @@ class UserDB(Base):
     username = Column(String, unique=True, nullable=False)
     hashed_password = Column(String, nullable=False)
 
+class CategoryDB(Base):
+    __tablename__ = "categories"
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, unique=True, nullable=False)
+
 class PostDB(Base):
     __tablename__ = "posts"
     id = Column(Integer, primary_key=True, index=True)
@@ -30,8 +35,18 @@ class PostDB(Base):
     content = Column(Text, nullable=False)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)
     author_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    category_id = Column(Integer, ForeignKey("categories.id"), nullable=True)
+
+class CommentDB(Base):
+    __tablename__ = "comments"
+    id = Column(Integer, primary_key=True, index=True)
+    content = Column(Text, nullable=False)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)
+    post_id = Column(Integer, ForeignKey("posts.id"), nullable=False)
+    author_id = Column(Integer, ForeignKey("users.id"), nullable=False)
 
 # Create tables
+Base.metadata.drop_all(bind=engine)  # Drop existing tables to avoid schema conflicts
 Base.metadata.create_all(bind=engine)
 
 app = FastAPI()
@@ -45,9 +60,23 @@ class User(BaseModel):
     id: int
     username: str
 
+class CategoryCreate(BaseModel):
+    name: str
+
+    @field_validator("name")
+    def check_non_empty(cls, value):
+        if not value.strip():
+            raise ValueError("Field cannot be empty")
+        return value
+
+class Category(BaseModel):
+    id: int
+    name: str
+
 class PostCreate(BaseModel):
     title: str
     content: str
+    category_id: int | None = None # Optional category
 
     @field_validator("title", "content")
     def check_non_empty(cls, value):
@@ -60,6 +89,23 @@ class Post(BaseModel):
     title: str
     content: str
     created_at: datetime
+    author_id: int
+    category_id: int | None
+
+class CommentCreate(BaseModel):
+    content: str
+
+    @field_validator("content")
+    def check_non_empty(cls, value):
+        if not value.strip():
+            raise ValueError("Comment cannot be empty")
+        return value
+
+class Comment(BaseModel):
+    id: int
+    content: str
+    created_at: datetime
+    post_id: int
     author_id: int
 
 # JWT setup
@@ -136,18 +182,39 @@ async def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = 
     access_token = create_access_token(data={"sub": user.username})
     return {"access_token": access_token, "token_type": "bearer"}
 
+@app.post("/categories", response_model=Category)
+def create_category(category: CategoryCreate, current_user: UserDB = Depends(get_current_user), db: Session = Depends(get_db)):
+    db_category = db.query(CategoryDB).filter(CategoryDB.name == category.name).first()
+    if db_category:
+        raise HTTPException(status_code=400, detail="Category already exists")
+    db_category = CategoryDB(name=category.name)
+    db.add(db_category)
+    db.commit()
+    db.refresh(db_category)
+    return db_category
+
+@app.get("/categories", response_model=List[Category])
+def get_categories(db: Session = Depends(get_db)):
+    return db.query(CategoryDB).all()
+
 @app.post("/posts", response_model=Post)
 def create_post(post: PostCreate, current_user: UserDB = Depends(get_current_user), db: Session = Depends(get_db)):
-    db_post = PostDB(title=post.title, content=post.content, author_id=current_user.id)
+    if post.category_id:
+        category = db.query(CategoryDB).filter(CategoryDB.id == post.category_id).first()
+        if not category:
+            raise HTTPException(status_code=404, detail="Category not found")
+    db_post = PostDB(title=post.title, content=post.content, author_id=current_user.id, category_id=post.category_id)
     db.add(db_post)
     db.commit()
     db.refresh(db_post)
     return db_post
 
 @app.get("/posts", response_model=List[Post])
-def get_posts(current_user: UserDB = Depends(get_current_user), db: Session = Depends(get_db)):
-    posts = db.query(PostDB).filter(PostDB.author_id == current_user.id).all()
-    return posts
+def get_posts(category_id: int | None = None, current_user: UserDB = Depends(get_current_user), db: Session = Depends(get_db)):
+    query = db.query(PostDB).filter(PostDB.author_id == current_user.id)
+    if category_id:
+        query = query.filter(PostDB.category_id == category_id)
+    return query.all()
 
 @app.get("/posts/{post_id}", response_model=Post)
 def get_post(post_id: int, current_user: UserDB = Depends(get_current_user), db: Session = Depends(get_db)):
@@ -161,8 +228,13 @@ def update_post(post_id: int, updated_post: PostCreate, current_user: UserDB = D
     db_post = db.query(PostDB).filter(PostDB.id == post_id, PostDB.author_id == current_user.id).first()
     if db_post is None:
         raise HTTPException(status_code=404, detail="Post not found")
+    if updated_post.category_id:
+        category = db.query(CategoryDB).filter(CategoryDB.id == updated_post.category_id).first()
+        if not category:
+            raise HTTPException(status_code=404, detail="Category not found")
     db_post.title = updated_post.title
     db_post.content = updated_post.content
+    db_post.category_id = updated_post.category_id
     db.commit()
     db.refresh(db_post)
     return db_post
@@ -175,3 +247,21 @@ def delete_post(post_id: int, current_user: UserDB = Depends(get_current_user), 
     db.delete(db_post)
     db.commit()
     return {"message": "Post deleted"}
+
+@app.post("/posts/{post_id}/comments", response_model=Comment)
+def create_comment(post_id: int, comment: CommentCreate, current_user: UserDB = Depends(get_current_user), db: Session = Depends(get_db)):
+    post = db.query(PostDB).filter(PostDB.id == post_id).first()
+    if not post:
+        raise HTTPException(status_code=404, detail="Post not found")
+    db_comment = CommentDB(content=comment.content, post_id=post_id, author_id=current_user.id)
+    db.add(db_comment)
+    db.commit()
+    db.refresh(db_comment)
+    return db_comment
+
+@app.get("/posts/{post_id}/comments", response_model=List[Comment])
+def get_comments(post_id: int, db: Session = Depends(get_db)):
+    post = db.query(PostDB).filter(PostDB.id == post_id).first()
+    if not post:
+        raise HTTPException(status_code=404, detail="Post not found")
+    return db.query(CommentDB).filter(CommentDB.post_id == post_id).all()
