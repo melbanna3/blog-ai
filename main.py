@@ -1,7 +1,7 @@
 from fastapi import FastAPI, HTTPException, Depends, status
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from pydantic import BaseModel, field_validator
-from typing import List
+from typing import List, Optional
 from enum import Enum
 from sqlalchemy import create_engine, Column, Integer, String, Text, DateTime, ForeignKey
 from sqlalchemy.orm import declarative_base, sessionmaker, Session
@@ -76,7 +76,7 @@ class Category(BaseModel):
 class PostCreate(BaseModel):
     title: str
     content: str
-    category_id: int | None = None # Optional category
+    category_id: Optional[int] = None  # Optional category
 
     @field_validator("title", "content")
     def check_non_empty(cls, value):
@@ -90,7 +90,7 @@ class Post(BaseModel):
     content: str
     created_at: datetime
     author_id: int
-    category_id: int | None
+    category_id: Optional[int]
 
 class CommentCreate(BaseModel):
     content: str
@@ -210,7 +210,7 @@ def create_post(post: PostCreate, current_user: UserDB = Depends(get_current_use
     return db_post
 
 @app.get("/posts", response_model=List[Post])
-def get_posts(category_id: int | None = None, current_user: UserDB = Depends(get_current_user), db: Session = Depends(get_db)):
+def get_posts(category_id: Optional[int] = None, current_user: UserDB = Depends(get_current_user), db: Session = Depends(get_db)):
     query = db.query(PostDB).filter(PostDB.author_id == current_user.id)
     if category_id:
         query = query.filter(PostDB.category_id == category_id)
