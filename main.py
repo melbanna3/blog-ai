@@ -8,10 +8,13 @@ from sqlalchemy.orm import declarative_base, sessionmaker, Session
 from passlib.context import CryptContext
 from jose import JWTError, jwt
 from datetime import datetime, timedelta, timezone
+from os import getenv
+from dotenv import load_dotenv
 
-
+# Load environment variables
+load_dotenv()  # Add at the top of main.py
 # Database setup
-DATABASE_URL = "postgresql://localhost/blog"
+DATABASE_URL = getenv("DATABASE_URL")
 engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
@@ -109,7 +112,7 @@ class Comment(BaseModel):
     author_id: int
 
 # JWT setup
-SECRET_KEY = "beb59e661b0b4ca9"  # Reuse Task Manager key for now
+SECRET_KEY = getenv("SECRET_KEY")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
 
